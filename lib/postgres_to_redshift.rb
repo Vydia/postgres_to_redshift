@@ -8,9 +8,6 @@ require "postgres_to_redshift/table"
 require "postgres_to_redshift/column"
 
 class PostgresToRedshift
-  class << self
-    attr_accessor :source_uri, :target_uri
-  end
 
   attr_reader :source_connection, :target_connection, :s3
 
@@ -50,21 +47,13 @@ class PostgresToRedshift
     (ENV['POSTGRES_TO_REDSHIFT_INCLUDE_TABLE_PATTERN'] || "").split(',')
   end
 
-  def self.source_uri
-    @source_uri ||= URI.parse(ENV['POSTGRES_TO_REDSHIFT_SOURCE_URI'])
-  end
-
-  def self.target_uri
-    @target_uri ||= URI.parse(ENV['POSTGRES_TO_REDSHIFT_TARGET_URI'])
-  end
-
   def self.drop_table_before_create
     ENV['DROP_TABLE_BEFORE_CREATE']
   end
 
   def self.source_connection
     unless instance_variable_defined?(:"@source_connection")
-      @source_connection = PG::Connection.new(host: source_uri.host, port: source_uri.port, user: source_uri.user || ENV['USER'], password: source_uri.password, dbname: source_uri.path[1..-1])
+      @source_connection = PG::Connection.new(ENV['POSTGRES_TO_REDSHIFT_SOURCE_URI'])
       @source_connection.exec("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;")
     end
 
@@ -73,7 +62,7 @@ class PostgresToRedshift
 
   def self.target_connection
     unless instance_variable_defined?(:"@target_connection")
-      @target_connection = PG::Connection.new(host: target_uri.host, port: target_uri.port, user: target_uri.user || ENV['USER'], password: target_uri.password, dbname: target_uri.path[1..-1])
+      @target_connection = PG::Connection.new(ENV['POSTGRES_TO_REDSHIFT_TARGET_URI'])
     end
 
     @target_connection
