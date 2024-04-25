@@ -153,9 +153,7 @@ class PostgresToRedshift
   end
 
   def custom_transform_for_tables(row, table)
-    if table.name == "assets"
-      return row.gsub(/NaN|Infinity|-Infinity/, "0.0")
-    end
+    return row.gsub(/NaN|Infinity|-Infinity/, "0.0") if table.name == "assets"
     row
   end
 
