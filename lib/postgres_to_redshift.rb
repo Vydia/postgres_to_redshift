@@ -126,7 +126,9 @@ class PostgresToRedshift
 
       source_connection.copy_data(copy_command) do
         while row = source_connection.get_copy_data
+          row = custom_transform_for_tables(row, table)
           zip.write(row)
+          # Write chunk to S3 and restart with new tmp file
           if (zip.pos > chunksize)
             zip.finish
             tmpfile.rewind
@@ -148,6 +150,13 @@ class PostgresToRedshift
       zip.close unless zip.closed?
       tmpfile.unlink
     end
+  end
+
+  def custom_transform_for_tables(row, table)
+    if table.name == "assets"
+      return row.gsub(/NaN|Infinity|-Infinity/, "0.0")
+    end
+    row
   end
 
   def upload_table(table, buffer, chunk)
