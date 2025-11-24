@@ -177,7 +177,6 @@ class PostgresToRedshift
           end
         end
       end
-
       zip.finish
       tmpfile.rewind
       upload_table(table, tmpfile, chunk)
