@@ -140,7 +140,7 @@ class PostgresToRedshift
       max_id = range_result['max']&.to_i
 
       # If the table is empty or has no IDs, stop
-      return if min_id.nil? || max_id.nil?
+      raise "DeveloperError: Table #{table} does not have an id column." if min_id.nil? || max_id.nil?
 
       copy_commands = []
       current_id = min_id
@@ -157,7 +157,7 @@ class PostgresToRedshift
     begin
       puts "Downloading #{table} with #{copy_commands.size} #{batch_size.nil? ? 'full query' : 'batches'}"
 
-      copy_commands.each_with_index do |copy_command|
+      copy_commands.each do |copy_command|
         source_connection.copy_data(copy_command) do
           while row = source_connection.get_copy_data
             row = custom_transform_for_tables(row, table)
