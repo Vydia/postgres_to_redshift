@@ -119,42 +119,45 @@ class PostgresToRedshift
     zip = Zlib::GzipWriter.new(tmpfile)
     chunksize = 5 * GIGABYTE # uncompressed
     chunk = 1
+    # Delete previous exports before starting
     bucket.objects.with_prefix("export/#{table.target_table_name}.psv.gz").delete_all
+
+    # 1. Determine the list of COPY commands to run
+    if batch_size.nil?
+      # Normal execution: Single command for the whole table
+      copy_commands = [
+        "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+      ]
+    else
+      # Batched execution: Determine ID ranges
+      id_column = table.id_column # Assumes this method exists on 'table'
+      puts "Determining min/max ID for batched copy on column: #{id_column}"
+
+      # Get min/max ID from the source table
+      id_range_query = "SELECT MIN(#{id_column}), MAX(#{id_column}) FROM #{source_schema}.#{table.name}"
+      range_result = source_connection.exec(id_range_query).first
+      min_id = range_result['min']&.to_i
+      max_id = range_result['max']&.to_i
+
+      # If the table is empty or has no IDs, stop
+      return if min_id.nil? || max_id.nil?
+
+      copy_commands = []
+      current_id = min_id
+      while current_id <= max_id
+        next_id = [current_id + batch_size - 1, max_id].min
+
+        # Generate the COPY command with the WHERE clause for the specific ID range
+        copy_commands << "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name} WHERE #{id_column} BETWEEN #{current_id} AND #{next_id}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+        current_id = next_id + 1
+      end
+    end
+
+    # 2. Execute all commands sequentially
     begin
-      puts "Downloading #{table}"
-      if batch_size
-        puts "Using batch size of #{batch_size}"
-        total_row_count = source_connection.exec("SELECT COUNT(*) FROM #{source_schema}.#{table.name}").first['count'].to_i
-        offset = 0
-        while offset < total_row_count
-          puts "Processing rows #{offset} to #{[offset + batch_size - 1, total_row_count - 1].min} of #{total_row_count}"
+      puts "Downloading #{table} with #{copy_commands.size} #{batch_size.nil? ? 'full query' : 'batches'}"
 
-          copy_command = "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name} LIMIT #{batch_size} OFFSET #{offset}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
-
-          source_connection.copy_data(copy_command) do
-            while row = source_connection.get_copy_data
-              row = custom_transform_for_tables(row, table)
-              zip.write(row)
-              # Write chunk to S3 and restart with new tmp file
-              if (zip.pos > chunksize)
-                zip.finish
-                tmpfile.rewind
-                upload_table(table, tmpfile, chunk)
-                chunk += 1
-                zip.close unless zip.closed?
-                tmpfile.unlink
-                tmpfile = Tempfile.new("psql2rs")
-                tmpfile.binmode
-                zip = Zlib::GzipWriter.new(tmpfile)
-              end
-            end
-          end
-          offset += batch_size
-        end
-      else
-        puts "Using default batch size"
-        copy_command = "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
-
+      copy_commands.each_with_index do |copy_command|
         source_connection.copy_data(copy_command) do
           while row = source_connection.get_copy_data
             row = custom_transform_for_tables(row, table)
@@ -174,7 +177,7 @@ class PostgresToRedshift
           end
         end
       end
-      
+
       zip.finish
       tmpfile.rewind
       upload_table(table, tmpfile, chunk)
