@@ -15,7 +15,7 @@ class PostgresToRedshift
   MEGABYTE = KILOBYTE * 1024
   GIGABYTE = MEGABYTE * 1024
 
-  def self.update_tables
+  def self.update_tables(batch_size: nil)
     update_tables = PostgresToRedshift.new
 
     puts "exclude_filters: #{exclude_filters}"
@@ -31,7 +31,7 @@ class PostgresToRedshift
 
       target_connection.exec("CREATE TABLE IF NOT EXISTS #{target_schema}.#{target_connection.quote_ident(table.target_table_name)} (#{table.columns_for_create})")
 
-      update_tables.copy_table(table)
+      update_tables.copy_table(table, batch_size: batch_size)
 
       update_tables.import_table(table)
 
@@ -113,7 +113,7 @@ class PostgresToRedshift
     @bucket ||= s3.buckets[ENV['S3_DATABASE_EXPORT_BUCKET']]
   end
 
-  def copy_table(table)
+  def copy_table(table, batch_size: nil)
     tmpfile = Tempfile.new("psql2rs")
     tmpfile.binmode
     zip = Zlib::GzipWriter.new(tmpfile)
@@ -122,26 +122,59 @@ class PostgresToRedshift
     bucket.objects.with_prefix("export/#{table.target_table_name}.psv.gz").delete_all
     begin
       puts "Downloading #{table}"
-      copy_command = "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+      if batch_size
+        puts "Using batch size of #{batch_size}"
+        total_row_count = source_connection.exec("SELECT COUNT(*) FROM #{source_schema}.#{table.name}").first['count'].to_i
+        offset = 0
+        while offset < total_row_count
+          puts "Processing rows #{offset} to #{[offset + batch_size - 1, total_row_count - 1].min} of #{total_row_count}"
 
-      source_connection.copy_data(copy_command) do
-        while row = source_connection.get_copy_data
-          row = custom_transform_for_tables(row, table)
-          zip.write(row)
-          # Write chunk to S3 and restart with new tmp file
-          if (zip.pos > chunksize)
-            zip.finish
-            tmpfile.rewind
-            upload_table(table, tmpfile, chunk)
-            chunk += 1
-            zip.close unless zip.closed?
-            tmpfile.unlink
-            tmpfile = Tempfile.new("psql2rs")
-            tmpfile.binmode
-            zip = Zlib::GzipWriter.new(tmpfile)
+          copy_command = "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name} LIMIT #{batch_size} OFFSET #{offset}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+
+          source_connection.copy_data(copy_command) do
+            while row = source_connection.get_copy_data
+              row = custom_transform_for_tables(row, table)
+              zip.write(row)
+              # Write chunk to S3 and restart with new tmp file
+              if (zip.pos > chunksize)
+                zip.finish
+                tmpfile.rewind
+                upload_table(table, tmpfile, chunk)
+                chunk += 1
+                zip.close unless zip.closed?
+                tmpfile.unlink
+                tmpfile = Tempfile.new("psql2rs")
+                tmpfile.binmode
+                zip = Zlib::GzipWriter.new(tmpfile)
+              end
+            end
+          end
+          offset += batch_size
+        end
+      else
+        puts "Using default batch size"
+        copy_command = "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+
+        source_connection.copy_data(copy_command) do
+          while row = source_connection.get_copy_data
+            row = custom_transform_for_tables(row, table)
+            zip.write(row)
+            # Write chunk to S3 and restart with new tmp file
+            if (zip.pos > chunksize)
+              zip.finish
+              tmpfile.rewind
+              upload_table(table, tmpfile, chunk)
+              chunk += 1
+              zip.close unless zip.closed?
+              tmpfile.unlink
+              tmpfile = Tempfile.new("psql2rs")
+              tmpfile.binmode
+              zip = Zlib::GzipWriter.new(tmpfile)
+            end
           end
         end
       end
+      
       zip.finish
       tmpfile.rewind
       upload_table(table, tmpfile, chunk)
