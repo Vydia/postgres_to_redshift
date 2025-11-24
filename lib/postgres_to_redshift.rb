@@ -158,6 +158,7 @@ class PostgresToRedshift
       puts "Downloading #{table} with #{copy_commands.size} #{batch_size.nil? ? 'full query' : 'batches'}"
 
       copy_commands.each do |copy_command|
+        puts "Running: #{copy_command}"
         source_connection.copy_data(copy_command) do
           while row = source_connection.get_copy_data
             row = custom_transform_for_tables(row, table)
