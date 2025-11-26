@@ -130,11 +130,10 @@ class PostgresToRedshift
       ]
     else
       # Batched execution: Determine ID ranges
-      id_column = table.id # Assumes this method exists on 'table'
-      puts "Determining min/max ID for batched copy on column: #{id}"
+      puts "Determining min/max ID for batched copy on column: id"
 
       # Get min/max ID from the source table
-      id_range_query = "SELECT MIN(#{id_column}), MAX(#{id_column}) FROM #{source_schema}.#{table.name}"
+      id_range_query = "SELECT MIN(id), MAX(id) FROM #{source_schema}.#{table.name}"
       range_result = source_connection.exec(id_range_query).first
       min_id = range_result['min']&.to_i
       max_id = range_result['max']&.to_i
@@ -148,7 +147,7 @@ class PostgresToRedshift
         next_id = [current_id + batch_size - 1, max_id].min
 
         # Generate the COPY command with the WHERE clause for the specific ID range
-        copy_commands << "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name} WHERE #{id_column} BETWEEN #{current_id} AND #{next_id}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+        copy_commands << "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name} WHERE id BETWEEN #{current_id} AND #{next_id}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
         current_id = next_id + 1
       end
     end
