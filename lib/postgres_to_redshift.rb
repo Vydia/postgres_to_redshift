@@ -113,6 +113,19 @@ class PostgresToRedshift
     @bucket ||= s3.buckets[ENV['S3_DATABASE_EXPORT_BUCKET']]
   end
 
+  def upload(original_file, s3_path, options = {})
+    s3_options = options.except(:private, :attachment).merge(
+      multipart_threshold: 524288000,
+    )
+
+    s3_options[:content_disposition] = "attachment; filename=#{File.basename(s3_path)}" if options.fetch(:attachment, false)
+
+    bucket.object(s3_path).upload_file(
+      original_file,
+      s3_options,
+    )
+  end
+
   def copy_table(table, batch_size: nil)
     tmpfile = Tempfile.new("psql2rs")
     tmpfile.binmode
@@ -194,7 +207,7 @@ class PostgresToRedshift
 
   def upload_table(table, buffer, chunk)
     puts "Uploading #{table.target_table_name}.#{chunk}"
-    bucket.objects["export/#{table.target_table_name}.psv.gz.#{chunk}"].write(buffer, acl: :authenticated_read)
+    upload(buffer, "export/#{table.target_table_name}.psv.gz.#{chunk}")
   end
 
   def import_table(table)
