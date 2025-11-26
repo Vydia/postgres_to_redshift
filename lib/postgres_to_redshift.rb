@@ -130,8 +130,8 @@ class PostgresToRedshift
       ]
     else
       # Batched execution: Determine ID ranges
-      id_column = table.id_column # Assumes this method exists on 'table'
-      puts "Determining min/max ID for batched copy on column: #{id_column}"
+      id_column = table.id # Assumes this method exists on 'table'
+      puts "Determining min/max ID for batched copy on column: #{id}"
 
       # Get min/max ID from the source table
       id_range_query = "SELECT MIN(#{id_column}), MAX(#{id_column}) FROM #{source_schema}.#{table.name}"
