@@ -114,11 +114,12 @@ class PostgresToRedshift
   end
 
   def upload(original_file, s3_path, options = {})
-    s3_options = options.except(:private, :attachment).merge(
+    attachment = options.fetch(:attachment, false)
+    s3_options = options.delete(:private, :attachment).merge(
       multipart_threshold: 524288000,
     )
 
-    s3_options[:content_disposition] = "attachment; filename=#{File.basename(s3_path)}" if options.fetch(:attachment, false)
+    s3_options[:content_disposition] = "attachment; filename=#{File.basename(s3_path)}" if attachment
 
     bucket.object(s3_path).upload_file(
       original_file,
