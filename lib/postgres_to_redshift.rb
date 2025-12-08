@@ -115,7 +115,7 @@ class PostgresToRedshift
 
   def upload(original_file, s3_path, options = {})
     attachment = options.fetch(:attachment, false)
-    s3_options = options.delete(:private, :attachment).merge(
+    s3_options = options.reject{ |key| key == :private || key == :attachment }.merge(
       multipart_threshold: 524288000,
     )
 
