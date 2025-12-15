@@ -121,7 +121,7 @@ class PostgresToRedshift
 
     s3_options[:content_disposition] = "attachment; filename=#{File.basename(s3_path)}" if attachment
 
-    bucket.objects[s3_path].upload_file(
+    bucket.objects[s3_path].write(
       original_file,
       s3_options,
     )
