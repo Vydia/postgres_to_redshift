@@ -15,7 +15,7 @@ class PostgresToRedshift
   MEGABYTE = KILOBYTE * 1024
   GIGABYTE = MEGABYTE * 1024
 
-  def self.update_tables
+  def self.update_tables(batch_size: nil)
     update_tables = PostgresToRedshift.new
 
     puts "exclude_filters: #{exclude_filters}"
@@ -31,7 +31,7 @@ class PostgresToRedshift
 
       target_connection.exec("CREATE TABLE IF NOT EXISTS #{target_schema}.#{target_connection.quote_ident(table.target_table_name)} (#{table.columns_for_create})")
 
-      update_tables.copy_table(table)
+      update_tables.copy_table(table, batch_size: batch_size)
 
       update_tables.import_table(table)
 
@@ -113,32 +113,81 @@ class PostgresToRedshift
     @bucket ||= s3.buckets[ENV['S3_DATABASE_EXPORT_BUCKET']]
   end
 
-  def copy_table(table)
+  def upload(original_file, s3_path, options = {})
+    attachment = options.fetch(:attachment, false)
+    s3_options = options.reject{ |key| key == :private || key == :attachment }.merge(
+      multipart_threshold: 524288000,
+    )
+
+    s3_options[:content_disposition] = "attachment; filename=#{File.basename(s3_path)}" if attachment
+
+    bucket.objects[s3_path].write(
+      original_file,
+      s3_options,
+    )
+  end
+
+  def copy_table(table, batch_size: nil)
     tmpfile = Tempfile.new("psql2rs")
     tmpfile.binmode
     zip = Zlib::GzipWriter.new(tmpfile)
     chunksize = 5 * GIGABYTE # uncompressed
     chunk = 1
+    # Delete previous exports before starting
     bucket.objects.with_prefix("export/#{table.target_table_name}.psv.gz").delete_all
-    begin
-      puts "Downloading #{table}"
-      copy_command = "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
 
-      source_connection.copy_data(copy_command) do
-        while row = source_connection.get_copy_data
-          row = custom_transform_for_tables(row, table)
-          zip.write(row)
-          # Write chunk to S3 and restart with new tmp file
-          if (zip.pos > chunksize)
-            zip.finish
-            tmpfile.rewind
-            upload_table(table, tmpfile, chunk)
-            chunk += 1
-            zip.close unless zip.closed?
-            tmpfile.unlink
-            tmpfile = Tempfile.new("psql2rs")
-            tmpfile.binmode
-            zip = Zlib::GzipWriter.new(tmpfile)
+    # 1. Determine the list of COPY commands to run
+    if batch_size.nil?
+      # Normal execution: Single command for the whole table
+      copy_commands = [
+        "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+      ]
+    else
+      # Batched execution: Determine ID ranges
+      puts "Determining min/max ID for batched copy on column: id"
+
+      # Get min/max ID from the source table
+      id_range_query = "SELECT MIN(id), MAX(id) FROM #{source_schema}.#{table.name}"
+      range_result = source_connection.exec(id_range_query).first
+      min_id = range_result['min']&.to_i
+      max_id = range_result['max']&.to_i
+
+      # If the table is empty or has no IDs, stop
+      raise "DeveloperError: Table #{table} does not have an id column." if min_id.nil? || max_id.nil?
+
+      copy_commands = []
+      current_id = min_id
+      while current_id <= max_id
+        next_id = [current_id + batch_size - 1, max_id].min
+
+        # Generate the COPY command with the WHERE clause for the specific ID range
+        copy_commands << "COPY (SELECT #{table.columns_for_copy} FROM #{source_schema}.#{table.name} WHERE id BETWEEN #{current_id} AND #{next_id}) TO STDOUT WITH DELIMITER ',' QUOTE '''' ENCODING 'UTF8' CSV"
+        current_id = next_id + 1
+      end
+    end
+
+    # 2. Execute all commands sequentially
+    begin
+      puts "Downloading #{table} with #{copy_commands.size} #{batch_size.nil? ? 'full query' : 'batches'}"
+
+      copy_commands.each do |copy_command|
+        puts "Running: #{copy_command}"
+        source_connection.copy_data(copy_command) do
+          while row = source_connection.get_copy_data
+            row = custom_transform_for_tables(row, table)
+            zip.write(row)
+            # Write chunk to S3 and restart with new tmp file
+            if (zip.pos > chunksize)
+              zip.finish
+              tmpfile.rewind
+              upload_table(table, tmpfile, chunk)
+              chunk += 1
+              zip.close unless zip.closed?
+              tmpfile.unlink
+              tmpfile = Tempfile.new("psql2rs")
+              tmpfile.binmode
+              zip = Zlib::GzipWriter.new(tmpfile)
+            end
           end
         end
       end
@@ -159,7 +208,7 @@ class PostgresToRedshift
 
   def upload_table(table, buffer, chunk)
     puts "Uploading #{table.target_table_name}.#{chunk}"
-    bucket.objects["export/#{table.target_table_name}.psv.gz.#{chunk}"].write(buffer, acl: :authenticated_read)
+    upload(buffer, "export/#{table.target_table_name}.psv.gz.#{chunk}")
   end
 
   def import_table(table)
