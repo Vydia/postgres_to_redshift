@@ -190,6 +190,8 @@ class PostgresToRedshift
             end
           end
         end
+        puts "Resetting connection: source_connection.reset"
+        source_connection.reset
       end
       zip.finish
       tmpfile.rewind
